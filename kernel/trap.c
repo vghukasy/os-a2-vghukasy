@@ -10,6 +10,7 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[];
+extern struct proc proc[NPROC];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -39,22 +40,22 @@ usertrap(void)
 {
   int which_dev = 0;
 
-  if ((r_sstatus() & SSTATUS_SPP) != 0)
+  if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec); //DOC: kernelvec
+  w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
 
   // save user program counter.
   p->trapframe->epc = r_sepc();
 
-  if (r_scause() == 8) {
+  if(r_scause() == 8){
     // system call
 
-    if (killed(p))
+    if(killed(p))
       kexit(-1);
 
     // sepc points to the ecall instruction,
@@ -66,11 +67,9 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if ((which_dev = devintr()) != 0) {
+  } else if((which_dev = devintr()) != 0){
     // ok
-  } else if ((r_scause() == 15 || r_scause() == 13) &&
-             vmfault(p->pagetable, p->sz, r_stval(),
-                     (r_scause() == 13) ? 1 : 0) != 0) {
+  } else if((r_scause() == 15 || r_scause() == 13) && vmfault(p->pagetable, p->sz, r_stval(), (r_scause() == 13)? 1 : 0) != 0) {
     // page fault on lazily-allocated page
   } else {
     printk("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
@@ -78,12 +77,15 @@ usertrap(void)
     setkilled(p);
   }
 
-  if (killed(p))
+  if(killed(p))
     kexit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2)
-    yield();
+  // CHANGED: charge the tick, and give up the CPU only if the MLFQ rules say so.
+  if (which_dev == 2){
+    if (mlfq_tick(p)) {
+      yield();
+    }
+  }
 
   prepare_return();
 
@@ -154,8 +156,11 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0)
-    yield();
+  if (which_dev == 2 && myproc() != 0) {
+    if (mlfq_tick(myproc())) {
+      yield();
+    }
+  }
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
@@ -166,16 +171,25 @@ kerneltrap()
 void
 clockintr()
 {
-  if (cpuid() == 0) {
+  if (cpuid() == 0){
     acquire(&tickslock);
     ticks++;
     wakeup(&ticks);
+
+    if (ticks % 64 == 0) {
+      for (struct proc *process = proc; process < &proc[NPROC]; process++) {
+        acquire(&process->lock);
+        process->level = 0;
+        process->levelticksused = 0;
+        release(&process->lock);
+      }
+    }
+
     release(&tickslock);
   }
 
   // ask for the next timer interrupt. this also clears
-  // the interrupt request. 1000000 is about a tenth
-  // of a second.
+  // the interrupt request. 1000000 is about a tenth of a second.
   w_stimecmp(r_time() + 1000000);
 }
 

@@ -11,6 +11,9 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+static int level_time_slice[4] = { 1, 2, 4, 8 };
+static int level_cursor[4] = { NPROC - 1, NPROC - 1, NPROC - 1, NPROC - 1 };
+
 struct proc *initproc;
 
 int nextpid = 1;
@@ -125,6 +128,12 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+
+  p->level = 0;
+  p->levelticksused = 0;
+  p->runticks = 0;
+  p->nsched = 0;
+  p->ctime = ticks;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -429,9 +438,8 @@ kwait(uint64 addr)
 void
 scheduler(void)
 {
-  struct proc *p;
   struct cpu *c = mycpu();
-
+  
   c->proc = 0;
   for (;;) {
     // The most recent process to run may have had interrupts
@@ -443,31 +451,81 @@ scheduler(void)
     intr_off();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
+    for (int level = 0; level < 4 && found == 0; level++) {
+      for (int offset = 1; offset <= NPROC; offset++) {
+        int index = (level_cursor[level] + offset) % NPROC;
+        struct proc *process = &proc[index];
 
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
+        acquire(&process->lock);
 
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+        if (process->state == RUNNABLE && process->level == level) {
+          level_cursor[level] = index;
+
+          // Switch to chosen process.  It is the process's job
+          // to release its lock and then reacquire it
+          // before jumping back to us.
+          process->state = RUNNING;
+          process->nsched++;
+          c->proc = process;
+          swtch(&c->context, &process->context);
+
+          // Process is done running for now.
+          // It should have changed its p->state before coming back.
+          c->proc = 0;
+          found = 1;
+          release(&process->lock);
+          break;
+        }
+        
+        release(&process->lock);
       }
-      release(&p->lock);
     }
+
     if (found == 0) {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
   }
+}
+
+int
+mlfq_tick(struct proc *process)
+{
+  int should_yield = 0;
+
+  acquire(&process->lock);
+  process->runticks++;
+  process->levelticksused++;
+
+  if (process->levelticksused >= level_time_slice[process->level]) {
+    if (process->level < 3) {
+      process->level++;
+    }
+
+    process->levelticksused = 0;
+    should_yield = 1;
+  }
+
+  int current_level = process->level;
+  release(&process->lock);
+
+  if (should_yield) {
+    return 1;
+  }
+
+  // Slice not used up: yield only if a higher level has a RUNNABLE process.
+  for (struct proc *otherProcess = proc; otherProcess < &proc[NPROC]; otherProcess++){
+    acquire(&otherProcess->lock);
+
+    if (otherProcess->state == RUNNABLE && otherProcess->level < current_level) {
+      release(&otherProcess->lock);
+      return 1;
+    }
+
+    release(&otherProcess->lock);
+  }
+
+  return 0;
 }
 
 // Switch to scheduler.  Must hold only p->lock
