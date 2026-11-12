@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "pinfo.h"
 
 struct cpu cpus[NCPU];
 
@@ -700,4 +701,45 @@ procdump(void)
     printk("%d %s %s", p->pid, state, p->name);
     printk("\n");
   }
+}
+
+int
+kgetpinfo(uint64 buf, int max)
+{
+  struct proc *callerProcess = myproc();
+  struct pinfo info;
+
+  if (max < 0) {
+    return -1;
+  }
+  
+  int count = 0;
+  for (struct proc *process = proc; process < &proc[NPROC]; process++) {
+    if (count >= max) {
+      break;
+    }
+
+    acquire(&process->lock);
+    if (process->state == UNUSED) {
+      release(&process->lock);
+      continue;
+    }
+
+    info.pid = process->pid;
+    info.state = process->state;
+    info.level = process->level;
+    info.runticks = process->runticks;
+    info.nsched = process->nsched;
+    info.ctime = process->ctime;
+    safestrcpy(info.name, process->name, sizeof(info.name));
+    release(&process->lock);
+
+    if (copyout(callerProcess->pagetable, callerProcess->sz, buf + count * sizeof(struct pinfo), (char *)&info, sizeof(info)) < 0) {
+      return -1;
+    }
+
+    count++;
+  }
+
+  return count;
 }

@@ -89,6 +89,13 @@ struct proc {
   int xstate;           // Exit status to be returned to parent's wait
   int pid;              // Process ID
 
+  // scheduling statistics and MLFQ state
+  int level;            // Current MLFQ level, 0..3
+  int levelticksused;   // Ticks used at the current level since the last demotion or boost
+  int runticks;         // Timer ticks this process was charged for
+  int nsched;           // Times scheduler() switched to this process
+  int ctime;            // Value of ticks when the process was created
+
   // wait_lock must be held when using this:
   struct proc *parent; // Parent process
 
