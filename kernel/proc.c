@@ -123,6 +123,14 @@ allocproc(void)
       release(&p->lock);
     }
   }
+
+  int zombieCount = 0;
+  for (struct proc *scan = proc; scan < &proc[NPROC]; scan++) {
+    if (scan->state == ZOMBIE) {
+      zombieCount++;
+    }
+  }
+  printk("allocproc: no free slot, zombies=%d init level=%d init state=%d\n", zombieCount, initproc->level, initproc->state);
   return 0;
 
 found:
