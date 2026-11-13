@@ -123,14 +123,7 @@ allocproc(void)
       release(&p->lock);
     }
   }
-
-  int zombieCount = 0;
-  for (struct proc *scan = proc; scan < &proc[NPROC]; scan++) {
-    if (scan->state == ZOMBIE) {
-      zombieCount++;
-    }
-  }
-  printk("allocproc: no free slot, zombies=%d init level=%d init state=%d\n", zombieCount, initproc->level, initproc->state);
+  
   return 0;
 
 found:
@@ -476,6 +469,9 @@ scheduler(void)
           process->nsched++;
           c->proc = process;
           swtch(&c->context, &process->context);
+
+          // Don't re-enable interrupts on release.
+          mycpu()->intena = 0;
 
           // Process is done running for now.
           // It should have changed its p->state before coming back.
